@@ -87,6 +87,22 @@ async function moveMembers(fromChannel, toChannel) {
   }
 }
 
+async function muteMembers(targetChannel) {
+  const members = Array.from(targetChannel.members.values());
+  for (const [index, member] of members.entries()) {
+    try {
+      await member.voice.setMute(true, 'Scheduled mute command');
+      // small delay to avoid rate limits if many members
+      if (index % 5 === 0) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    } catch (err) {
+      // Continue muting remaining members even if some fail
+      console.error(`Failed to mute ${member.user.tag}:`, err?.message || err);
+    }
+  }
+}
+
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
@@ -100,13 +116,22 @@ client.on('messageCreate', async (message) => {
     const afterPrefix = message.content.slice(PREFIX.length).trim();
     const [commandToken, ...rawArgs] = tokenizeArgs(afterPrefix);
     const commandLower = (commandToken || '').toLowerCase();
-    if (commandLower !== 'move' && commandLower !== 'afk') return;
+    if (commandLower !== 'move' && commandLower !== 'afk' && commandLower !== 'mute') return;
 
-    const needsMoveMembersPermission = PermissionsBitField.Flags.MoveMembers;
     const me = message.guild.members.me || (await message.guild.members.fetch(client.user.id));
-    if (!me.permissions.has(needsMoveMembersPermission)) {
-      await message.reply('I need the "Move Members" permission to do that.');
-      return;
+    
+    if (commandLower === 'mute') {
+      const needsMutePermission = PermissionsBitField.Flags.MuteMembers;
+      if (!me.permissions.has(needsMutePermission)) {
+        await message.reply('I need the "Mute Members" permission to do that.');
+        return;
+      }
+    } else {
+      const needsMoveMembersPermission = PermissionsBitField.Flags.MoveMembers;
+      if (!me.permissions.has(needsMoveMembersPermission)) {
+        await message.reply('I need the "Move Members" permission to do that.');
+        return;
+      }
     }
 
     if (commandLower === 'move') {
@@ -233,6 +258,47 @@ client.on('messageCreate', async (message) => {
         } catch (err) {
           console.error('Scheduled AFK move failed:', err);
           await message.channel.send('AFK move failed. Check my permissions and try again.');
+        }
+      }, delayMs);
+      return;
+    }
+
+    // mute command
+    if (commandLower === 'mute') {
+      if (rawArgs.length !== 1) {
+        await message.reply(
+          `Usage:\n` +
+            `- ${PREFIX}mute <delay>  (server-mutes everyone in your current voice channel)\n` +
+            `Examples: ${PREFIX}mute 30s | ${PREFIX}mute 5m`
+        );
+        return;
+      }
+
+      const [delayArgMute] = rawArgs;
+      const delayMs = parseDelayToMs(delayArgMute);
+      if (!delayMs) {
+        await message.reply('Please provide a valid delay (e.g., 30s, 5m, 1h, or seconds like 120).');
+        return;
+      }
+
+      const targetChannel = message.member?.voice?.channel || null;
+      if (!targetChannel || !isVoiceChannel(targetChannel)) {
+        await message.reply('Join a voice channel to use this command.');
+        return;
+      }
+
+      const memberCount = targetChannel.members.size;
+      await message.reply(
+        `Scheduled: server-muting ${memberCount} member(s) in "${targetChannel.name}" in ${formatMs(delayMs)}.`
+      );
+
+      setTimeout(async () => {
+        try {
+          await muteMembers(targetChannel);
+          await message.channel.send(`Mute complete: "${targetChannel.name}" (${memberCount} members server-muted).`);
+        } catch (err) {
+          console.error('Scheduled mute failed:', err);
+          await message.channel.send('Mute failed. Check my permissions and try again.');
         }
       }, delayMs);
       return;
